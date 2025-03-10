@@ -1,4 +1,6 @@
 /target
+.clj-kondo/
+.lsp/
 /classes
 /checkouts
 profiles.clj
