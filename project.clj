@@ -6,5 +6,6 @@
   :main jepsen.etcdemo
   :dependencies [[org.clojure/clojure "1.11.1"]
                  [jepsen "0.2.1-SNAPSHOT"]
-                 [verschlimmbesserung "0.1.3"]]
+                 [verschlimmbesserung "0.1.3"]
+                 [slingshot "0.12.2"]]
   :repl-options {:init-ns jepsen.etcdemo})

@@ -9,12 +9,21 @@
              [generator :as gen]
              [tests :as tests]]
             [jepsen.control.util :as cu]
-            [jepsen.os.debian :as debian]))
+            [jepsen.os.debian :as debian]
+            [slingshot.slingshot :refer [try+]]))
 
 (def dir "/opt/etcd")
 (def binary "etcd")
 (def logfile (str dir "/etcd.log"))
 (def pidfile (str dir "/etcd.pid"))
+
+; for slingshot try+
+(def ex)
+
+(defn parse-long
+  "Parses a string to a Long. Passes through `nil`."
+  [s]
+  (when s (Long/parseLong s)))
 
 (defn node-url
   "An HTTP url for connectiong to a node on a particular port."
@@ -85,7 +94,6 @@
 (defrecord Client [conn]
   client/Client
   (open! [this test node]
-    (log/info node (client-url node))
     (assoc this :conn (v/connect (client-url node)
                                  {:timeout 5000})))
 
@@ -93,7 +101,16 @@
 
   (invoke! [this test op]
     (case (:f op)
-      :read (assoc op :type :ok, :value (v/get conn "foo"))))
+      :read (assoc op :type :ok, :value (parse-long (v/get conn "foo")))
+      :write (do (v/reset! conn "foo" (:value op))
+                 (assoc op :type :ok))
+      :cas (try+
+            (let [[old new] (:value op)]
+              (assoc op :type (if (v/cas! conn "foo" old new)
+                                :ok
+                                :fail)))
+            (catch [:errorCode 100] ex
+              (assoc op :type :fail, :error :not-found)))))
 
   (teardown! [this test])
 
@@ -113,7 +130,7 @@
           :os              debian/os
           :db              (db "v3.1.5") ; use etcd v3.1.5
           :client          (Client. nil)
-          :generator       (->> r
+          :generator       (->> (gen/mix [r w cas])
                                 (gen/stagger 1) ; a certain amount of random delay between operations
                                 (gen/nemesis nil)
                                 (gen/time-limit 15))})) ; the time limit for the test
