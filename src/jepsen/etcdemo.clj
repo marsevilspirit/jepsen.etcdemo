@@ -2,14 +2,17 @@
   (:require [clojure.tools.logging :as log]
             [clojure.string :as str]
             [verschlimmbesserung.core :as v]
-            [jepsen [cli :as cli]
+            [jepsen [checker :as checker]
+             [cli :as cli]
              [client :as client]
              [control :as c]
              [db :as db]
              [generator :as gen]
              [tests :as tests]]
+            [jepsen.checker.timeline :as timeline]
             [jepsen.control.util :as cu]
             [jepsen.os.debian :as debian]
+            [knossos.model :as model]
             [slingshot.slingshot :refer [try+]]))
 
 (def dir "/opt/etcd")
@@ -130,6 +133,12 @@
           :os              debian/os
           :db              (db "v3.1.5") ; use etcd v3.1.5
           :client          (Client. nil)
+          :checker         (checker/compose
+                            {:perf (checker/perf)
+                             :linear (checker/linearizable
+                                      {:model     (model/cas-register)
+                                       :algorithm :linear})
+                             :timeline (timeline/html)})
           :generator       (->> (gen/mix [r w cas])
                                 (gen/stagger 1) ; a certain amount of random delay between operations
                                 (gen/nemesis nil)
