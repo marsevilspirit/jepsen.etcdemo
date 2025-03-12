@@ -1,12 +1,14 @@
 (ns jepsen.etcdemo
   (:require [clojure.tools.logging :as log]
             [clojure.string :as str]
-            [jepsen [checker :as checker]
+            [jepsen
+             [checker :as checker]
              [cli :as cli]
              [client :as client]
              [control :as c]
              [db :as db]
              [generator :as gen]
+             [independent :as independent]
              [nemesis :as nemesis]
              [tests :as tests]]
             [jepsen.checker.timeline :as timeline]
@@ -103,21 +105,30 @@
 
   (setup! [this test])
 
-  (invoke! [this test op]
-    (case (:f op)
-      :read (let [value (-> conn
-                            (v/get "foo" {:quorum? true})
-                            parse-long)]
-              (assoc op :type :ok, :value value))
-      :write (do (v/reset! conn "foo" (:value op))
-                 (assoc op :type :ok))
-      :cas (try+
-            (let [[old new] (:value op)]
-              (assoc op :type (if (v/cas! conn "foo" old new)
-                                :ok
-                                :fail)))
-            (catch [:errorCode 100] ex
-              (assoc op :type :fail, :error :not-found)))))
+  (invoke! [_ test op]
+    (let [[k v] (:value op)]
+      (try+
+       (case (:f op)
+         :read (let [value (-> conn
+                               (v/get k {:quorum? true})
+                               parse-long)]
+                 (assoc op :type :ok, :value (independent/tuple k value)))
+
+         :write (do (v/reset! conn k v)
+                    (assoc op :type :ok))
+
+         :cas (let [[old new] v]
+                (assoc op :type (if (v/cas! conn k old new)
+                                  :ok
+                                  :fail))))
+
+       (catch java.net.SocketTimeoutException ex
+         (assoc op
+                :type  (if (= :read (:f op)) :fail :info)
+                :error :timeout))
+
+       (catch [:errorCode 100] ex
+         (assoc op :type :fail, :error :not-found)))))
 
   (teardown! [this test])
 
@@ -140,12 +151,19 @@
           :nemesis         (nemesis/partition-random-halves)
           :checker         (checker/compose
                             {:perf (checker/perf)
-                             :linear (checker/linearizable
-                                      {:model     (model/cas-register)
-                                       :algorithm :linear})
-                             :timeline (timeline/html)})
-          :generator       (->> (gen/mix [r w cas])
-                                (gen/stagger 1/50) ; a certain amount of random delay between operations
+                             :indep (independent/checker
+                                     (checker/compose
+                                      {:linear (checker/linearizable {:model (model/cas-register)
+                                                                      :algorithm :linear})
+                                       :timeline (timeline/html)}))})
+
+          :generator       (->> (independent/concurrent-generator
+                                 10
+                                 (range)
+                                 (fn [k]
+                                   (->> (gen/mix [r w cas])
+                                        (gen/stagger 1/50)
+                                        (gen/limit 1000))))
                                 (gen/nemesis
                                  (cycle [(gen/sleep 5)
                                          {:type :info, :f :start}
