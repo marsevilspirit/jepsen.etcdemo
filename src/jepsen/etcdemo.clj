@@ -1,9 +1,12 @@
 (ns jepsen.etcdemo
   (:require [clojure.tools.logging :as log]
             [clojure.string :as str]
+            [verschlimmbesserung.core :as v]
             [jepsen [cli :as cli]
+             [client :as client]
              [control :as c]
              [db :as db]
+             [generator :as gen]
              [tests :as tests]]
             [jepsen.control.util :as cu]
             [jepsen.os.debian :as debian]))
@@ -54,34 +57,66 @@
         :pidfile pidfile
         :chdir   dir}
        binary
-       :--log-output                  :stderr
-       :--name                        (name node)
-       :--listen-peer-urls            (peer-url node)
-       :--advertise-client-urls       (client-url node)
-       :--initial-cluster-state       :new
-       :--initial-advertise-peer-urls (peer-url node)
-       :--initial-cluster             (initial-cluster test))
+       :--log-output                   :stderr
+       :--name                         (name node)
+       :--listen-peer-urls             (peer-url   node) ; port: 2380
+       :--listen-client-urls           (client-url node) ; port: 2379
+       :--advertise-client-urls        (client-url node)
+       :--initial-cluster-state        :new
+       :--initial-advertise-peer-urls  (peer-url node)
+       :--initial-cluster              (initial-cluster test))
 
       (Thread/sleep 10000)) ; wait for etcd to start
 
     (teardown! [_ test node]
       (log/info node "tearing down etcd")
       (cu/stop-daemon! binary pidfile)
-      (c/su (c/exec :rm :-rf dir)))
+      (c/su (c/exec :rm :-rf dir)) ; TODO: rm comment
+      )
 
     db/LogFiles
     (log-files [_ test node]
       [logfile])))
 
+(defn r [_ _] {:type :invoke, :f :read, :value nil})
+(defn w [_ _] {:type :invoke, :f :write, :value (rand-int 5)})
+(defn cas [_ _] {:type :invoke, :f :cas, :value [(rand-int 5) (rand-int 5)]})
+
+(defrecord Client [conn]
+  client/Client
+  (open! [this test node]
+    (log/info node (client-url node))
+    (assoc this :conn (v/connect (client-url node)
+                                 {:timeout 5000})))
+
+  (setup! [this test])
+
+  (invoke! [this test op]
+    (case (:f op)
+      :read (assoc op :type :ok, :value (v/get conn "foo"))))
+
+  (teardown! [this test])
+
+  (close! [_ test]
+    ; If out connection were stateful, we'd close it here. Verschlimmmbesserung
+    ; doesn't actually hold connections, so there's nothing to close
+    ))
+
 (defn etcd-test
-  "Given an options map from the command line runner (e.g. :nodes, :ssh, :concurrency, ...), constructs a test map."
+  "Given an options map from the command line runner (e.g. :nodes, :ssh,
+  :concurrency, ...), constructs a test map."
   [opts]
   (merge tests/noop-test ; noop-test means none test to run
          opts
-         {:name "etcd"
-          :os debian/os
-          :db (db "v3.1.5") ; use etcd v3.1.5
-          :pure-generators true}))
+         {:pure-generators true
+          :name            "etcd"
+          :os              debian/os
+          :db              (db "v3.1.5") ; use etcd v3.1.5
+          :client          (Client. nil)
+          :generator       (->> r
+                                (gen/stagger 1) ; a certain amount of random delay between operations
+                                (gen/nemesis nil)
+                                (gen/time-limit 15))})) ; the time limit for the test
 
 (defn -main
   "Handles command line arguments.
