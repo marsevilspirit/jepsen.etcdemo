@@ -1,4 +1,3 @@
-version: '2'
 services:
   control:
     container_name: jepsen-control
